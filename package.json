@@ -1,0 +1,21 @@
+{
+  "name": "diceyclothes-catalog-import",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "import:yupoo": "node scripts/import-yupoo.mjs",
+    "import:yupoo:dry": "DRY_RUN=true node scripts/import-yupoo.mjs",
+    "check": "node --check scripts/import-yupoo.mjs"
+  },
+  "dependencies": {
+    "@supabase/supabase-js": "2.114.0",
+    "dotenv": "17.4.2",
+    "p-limit": "7.3.2",
+    "playwright": "1.62.1",
+    "slugify": "1.6.9"
+  },
+  "devDependencies": {
+    "supabase": "2.116.0"
+  }
+}
