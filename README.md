@@ -14,15 +14,14 @@ Products remain inactive after import so unfinished or unpriced items cannot acc
 ## Setup
 
 1. Apply `supabase/schema.sql` to the dedicated **DiceyClothes** Supabase project.
-2. Copy `.env.example` to `.env` and supply the Yupoo password plus the DiceyClothes Supabase URL and server-side secret key.
-3. Install Chromium once with `npx playwright install chromium`.
-4. Validate a small sample first:
+2. Copy `.env.example` to `.env` and supply the Yupoo password plus the DiceyClothes Supabase URL and server-side secret key. A publishable key may be used only with the temporary, token-locked import RLS policies.
+3. Validate a small sample first:
 
    ```bash
    IMPORT_END_PAGE=1 IMPORT_LIMIT=2 npm run import:yupoo
    ```
 
-5. Run the complete incremental import:
+4. Run the complete incremental import:
 
    ```bash
    npm run import:yupoo
