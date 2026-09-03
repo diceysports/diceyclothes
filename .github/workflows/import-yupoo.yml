@@ -11,7 +11,7 @@ on:
       end_page:
         description: Last Yupoo gallery page
         required: true
-        default: 40
+        default: 1
         type: number
 
 permissions:
@@ -58,12 +58,14 @@ jobs:
         if: ${{ matrix.page >= inputs.start_page && matrix.page <= inputs.end_page }}
         shell: bash
         run: |
-          for value in "$YUPOO_PASSWORD" "$SUPABASE_SECRET_KEY" "$R2_ACCOUNT_ID" "$R2_ACCESS_KEY_ID" "$R2_SECRET_ACCESS_KEY" "$R2_PUBLIC_BASE_URL"; do
-            if [ -z "$value" ]; then
-              echo "A required repository secret is missing."
-              exit 1
+          missing=0
+          for name in YUPOO_PASSWORD SUPABASE_SECRET_KEY R2_ACCOUNT_ID R2_ACCESS_KEY_ID R2_SECRET_ACCESS_KEY R2_PUBLIC_BASE_URL; do
+            if [ -z "${!name}" ]; then
+              echo "::error::Missing Actions repository secret: $name"
+              missing=1
             fi
           done
+          exit "$missing"
 
       - run: npm ci
         if: ${{ matrix.page >= inputs.start_page && matrix.page <= inputs.end_page }}
