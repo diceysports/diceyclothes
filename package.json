@@ -9,6 +9,7 @@
     "check": "node --check scripts/import-yupoo.mjs"
   },
   "dependencies": {
+    "@aws-sdk/client-s3": "3.1125.0",
     "@supabase/supabase-js": "2.114.0",
     "dotenv": "17.4.2",
     "p-limit": "7.3.2",
