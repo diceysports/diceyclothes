@@ -3,7 +3,6 @@ import 'dotenv/config'
 import { createHash } from 'node:crypto'
 import { createClient } from '@supabase/supabase-js'
 import pLimit from 'p-limit'
-import { chromium } from 'playwright'
 import slugify from 'slugify'
 
 const env = process.env
@@ -16,19 +15,24 @@ const importLimit = integerEnv('IMPORT_LIMIT', 0)
 const albumConcurrency = integerEnv('IMPORT_CONCURRENCY', 2)
 const uploadConcurrency = integerEnv('UPLOAD_CONCURRENCY', 4)
 const dryRun = booleanEnv('DRY_RUN', false)
-const headless = booleanEnv('HEADLESS', true)
+const supabaseKey = env.SUPABASE_SECRET_KEY || env.SUPABASE_PUBLISHABLE_KEY
+const owner = new URL(baseUrl).hostname.split('.')[0]
+let catalogUserId = null
 
 requireEnv('YUPOO_BASE_URL', baseUrl)
 requireEnv('YUPOO_PASSWORD', password)
 if (!dryRun) {
   requireEnv('SUPABASE_URL', env.SUPABASE_URL)
-  requireEnv('SUPABASE_SECRET_KEY', env.SUPABASE_SECRET_KEY)
+  requireEnv('SUPABASE_SECRET_KEY or SUPABASE_PUBLISHABLE_KEY', supabaseKey)
 }
 
 const supabase = dryRun
   ? null
-  : createClient(env.SUPABASE_URL, env.SUPABASE_SECRET_KEY, {
+  : createClient(env.SUPABASE_URL, supabaseKey, {
       auth: { persistSession: false, autoRefreshToken: false },
+      global: env.SUPABASE_IMPORT_TOKEN
+        ? { headers: { 'x-import-token': env.SUPABASE_IMPORT_TOKEN } }
+        : undefined,
     })
 
 const stats = {
@@ -40,32 +44,18 @@ const stats = {
 }
 
 let runId = null
-let browser
 
 try {
   if (!dryRun) runId = await startImportRun()
-
-  browser = await chromium.launch({ headless })
-  const context = await browser.newContext({
-    viewport: { width: 1440, height: 1000 },
-    userAgent:
-      'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/152 Safari/537.36',
-  })
-
-  const unlockPage = await context.newPage()
-  await unlockCatalog(unlockPage)
-  await unlockPage.close()
-
-  const galleryPage = await context.newPage()
+  await assertCatalogAccess()
   const albums = []
 
   for (let pageNumber = startPage; pageNumber <= endPage; pageNumber += 1) {
-    const pageAlbums = await readGalleryPage(galleryPage, pageNumber)
+    const pageAlbums = await readGalleryPage(pageNumber)
     console.log(`Gallery page ${pageNumber}: ${pageAlbums.length} albums`)
     albums.push(...pageAlbums)
     if (importLimit > 0 && albums.length >= importLimit) break
   }
-  await galleryPage.close()
 
   const uniqueAlbums = [...new Map(albums.map((album) => [album.albumId, album])).values()]
   const selectedAlbums = importLimit > 0 ? uniqueAlbums.slice(0, importLimit) : uniqueAlbums
@@ -76,16 +66,14 @@ try {
   await Promise.all(
     selectedAlbums.map((album) =>
       limit(async () => {
-        const page = await context.newPage()
         try {
-          await importAlbum(page, album)
+          await importAlbum(album)
           stats.productsCompleted += 1
         } catch (error) {
           stats.productsFailed += 1
           console.error(`Album ${album.albumId} failed:`, error)
           if (!dryRun) await markAlbumFailed(album, error)
         } finally {
-          await page.close()
           await updateRun()
         }
       }),
@@ -98,74 +86,54 @@ try {
   console.error('Import failed', error)
   await finishRun('failed', error)
   process.exitCode = 1
-} finally {
-  await browser?.close()
 }
 
-async function unlockCatalog(page) {
-  await goto(page, `${baseUrl}/albums`)
-  const locked = await page.getByText('Homepage is encrypted', { exact: false }).isVisible()
-  if (locked) {
-    const input = page.locator('input').last()
-    await input.fill(password)
-    await page.getByText('confirm', { exact: true }).click()
-    await page.waitForTimeout(1_200)
-  }
-
-  await goto(page, `${baseUrl}/albums?tab=gallery`)
-  await page.locator('a[href*="/albums/"]').first().waitFor({ timeout: 30_000 })
+async function assertCatalogAccess() {
+  const result = await fetchApi(`/web/users/${owner}`, { password })
+  if (!result?.passwordValid) throw new Error('The Yupoo catalog password was rejected')
+  catalogUserId = result.id
 }
 
-async function readGalleryPage(page, pageNumber) {
-  await goto(page, `${baseUrl}/albums?tab=gallery&page=${pageNumber}`)
-  await page.locator('a[href*="/albums/"]').first().waitFor({ timeout: 30_000 })
-
-  return page.locator('a[href*="/albums/"]').evaluateAll((links) =>
-    links
-      .map((link) => {
-        const match = link.href.match(/\/albums\/(\d+)/)
-        if (!match) return null
-        const lines = (link.innerText || '')
-          .split('\n')
-          .map((line) => line.trim())
-          .filter(Boolean)
-        const maybeCount = Number(lines[0])
-        const cover = link.querySelector('img')
-        const coverUrl = cover?.getAttribute('data-src') || cover?.getAttribute('src') || null
-        return {
-          albumId: match[1],
-          url: link.href,
-          listedImageCount: Number.isFinite(maybeCount) ? maybeCount : 0,
-          listedTitle: Number.isFinite(maybeCount) ? lines.slice(1).join(' ') : lines.join(' '),
-          coverUrl,
-        }
-      })
-      .filter(Boolean),
-  )
-}
-
-async function importAlbum(page, album) {
-  await goto(page, album.url)
-  await page.locator('.showalbumheader__gallerysubtitle').waitFor({ timeout: 30_000 })
-
-  const data = await page.evaluate(() => {
-    const header = document.querySelector('.showalbumheader__gallerysubtitle')
-    const lines = (header?.innerText || '')
-      .split('\n')
-      .map((line) => line.trim())
-      .filter(Boolean)
-    const title = lines.shift() || ''
-    const description = lines.join('\n')
-    const images = [...document.querySelectorAll('img[data-src*="photo.yupoo.com"]')]
-      .map((image) => ({
-        url: image.getAttribute('data-src'),
-        filename: image.getAttribute('alt') || null,
-      }))
-      .filter((image) => image.url && /\/big\.(jpe?g|png|webp)(\?|$)/i.test(image.url))
-    const published = document.querySelector('main time')?.getAttribute('datetime') ||
-      document.querySelector('main time')?.textContent?.trim() || null
-    return { title, description, images, published }
+async function readGalleryPage(pageNumber) {
+  const result = await fetchApi(`/web/users/${catalogUserId}/albums`, {
+    uid: '1',
+    page: String(pageNumber),
+    password,
   })
+  return (result.list || []).map((album) => ({
+    albumId: String(album.id),
+    url: `${baseUrl}/albums/${album.id}?uid=1`,
+    listedImageCount: album.photoNumber || 0,
+    listedTitle: album.name || '',
+    coverUrl: yupooImageUrl(album.cover),
+  }))
+}
+
+async function importAlbum(album) {
+  const firstPage = await fetchApi(`/web/albums/${album.albumId}/show`, {
+    uid: '1',
+    page: '1',
+    password,
+  })
+  const info = firstPage.albumInfo || {}
+  const items = [...(firstPage.list || [])]
+  const totalPages = Math.max(1, Math.ceil((firstPage.total || items.length) / (firstPage.pageSize || 120)))
+  for (let pageNumber = 2; pageNumber <= totalPages; pageNumber += 1) {
+    const nextPage = await fetchApi(`/web/albums/${album.albumId}/show`, {
+      uid: '1',
+      page: String(pageNumber),
+      password,
+    })
+    items.push(...(nextPage.list || []))
+  }
+  const data = {
+    title: info.name || album.listedTitle,
+    description: info.description || '',
+    published: info.updatedAt || info.createdAt || null,
+    images: items
+      .filter((item) => item.type === 'photo' && item.path)
+      .map((item) => ({ url: yupooImageUrl(item.path), filename: item.name || null })),
+  }
 
   data.images = [...new Map(data.images.map((image) => [image.url, image])).values()]
   const details = deriveProductDetails(data.title || album.listedTitle, data.description)
@@ -188,7 +156,7 @@ async function importAlbum(page, album) {
         supplier_code: details.supplierCode,
         sizes: details.sizes,
         slug,
-        cover_url: album.coverUrl,
+        cover_url: yupooImageUrl(info.cover) || album.coverUrl,
         expected_image_count: data.images.length || album.listedImageCount,
         import_status: 'importing',
         import_error: null,
@@ -236,6 +204,34 @@ async function importAlbum(page, album) {
     .eq('id', product.id)
   if (finishError) throw finishError
   if (!complete) throw new Error(`Image count mismatch: ${count || 0}/${data.images.length}`)
+}
+
+async function fetchApi(path, params) {
+  const url = new URL(`/api${path}`, baseUrl)
+  for (const [name, value] of Object.entries(params || {})) url.searchParams.set(name, value)
+  let lastError
+  for (let attempt = 1; attempt <= 3; attempt += 1) {
+    try {
+      const response = await fetch(url, {
+        headers: { referer: `${baseUrl}/`, 'user-agent': 'Mozilla/5.0 Chrome/152 Safari/537.36' },
+      })
+      if (!response.ok) throw new Error(`Yupoo API returned HTTP ${response.status}`)
+      const body = await response.json()
+      if (body.message !== 'OK') throw new Error(`Yupoo API error: ${body.message || body.code || 'unknown'}`)
+      return body.data
+    } catch (error) {
+      lastError = error
+      if (attempt < 3) await delay(500 * 2 ** (attempt - 1))
+    }
+  }
+  throw lastError
+}
+
+function yupooImageUrl(path) {
+  if (!path) return null
+  const slash = path.lastIndexOf('/')
+  if (slash < 0) return null
+  return `https://photo.yupoo.com${path.slice(0, slash)}/big.jpg`
 }
 
 async function copyImage(productId, albumId, title, image, position) {
@@ -384,10 +380,6 @@ async function markAlbumFailed(album, error) {
     .eq('source_album_id', album.albumId)
 }
 
-async function goto(page, url) {
-  await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 60_000 })
-}
-
 function requireEnv(name, value) {
   if (!value) throw new Error(`Missing required environment variable: ${name}`)
 }
@@ -404,7 +396,9 @@ function booleanEnv(name, fallback) {
 
 function parseDate(value) {
   if (!value) return null
-  const parsed = new Date(value)
+  const parsed = typeof value === 'number' && value < 1_000_000_000_000
+    ? new Date(value * 1_000)
+    : new Date(value)
   return Number.isNaN(parsed.valueOf()) ? null : parsed.toISOString()
 }
 
@@ -423,4 +417,3 @@ function extensionFromContentType(contentType) {
 function delay(milliseconds) {
   return new Promise((resolve) => setTimeout(resolve, milliseconds))
 }
-
