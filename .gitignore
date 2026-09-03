@@ -5,3 +5,4 @@ downloads/
 playwright-report/
 test-results/
 *.log
+supabase/.temp/
