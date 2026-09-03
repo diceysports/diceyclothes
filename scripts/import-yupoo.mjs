@@ -1,5 +1,6 @@
 import 'dotenv/config'
 
+import { PutObjectCommand, S3Client } from '@aws-sdk/client-s3'
 import { createHash } from 'node:crypto'
 import { createClient } from '@supabase/supabase-js'
 import pLimit from 'p-limit'
@@ -8,7 +9,10 @@ import slugify from 'slugify'
 const env = process.env
 const baseUrl = (env.YUPOO_BASE_URL || '').replace(/\/$/, '')
 const password = env.YUPOO_PASSWORD
-const bucket = env.SUPABASE_STORAGE_BUCKET || 'product-images'
+const storageBackend = (env.STORAGE_BACKEND || 'r2').toLowerCase()
+const supabaseBucket = env.SUPABASE_STORAGE_BUCKET || 'product-images'
+const r2Bucket = env.R2_BUCKET
+const r2PublicBaseUrl = (env.R2_PUBLIC_BASE_URL || '').replace(/\/$/, '')
 const startPage = integerEnv('IMPORT_START_PAGE', 1)
 const endPage = integerEnv('IMPORT_END_PAGE', 40)
 const importLimit = integerEnv('IMPORT_LIMIT', 0)
@@ -24,6 +28,15 @@ requireEnv('YUPOO_PASSWORD', password)
 if (!dryRun) {
   requireEnv('SUPABASE_URL', env.SUPABASE_URL)
   requireEnv('SUPABASE_SECRET_KEY or SUPABASE_PUBLISHABLE_KEY', supabaseKey)
+  if (storageBackend === 'r2') {
+    requireEnv('R2_ACCOUNT_ID', env.R2_ACCOUNT_ID)
+    requireEnv('R2_ACCESS_KEY_ID', env.R2_ACCESS_KEY_ID)
+    requireEnv('R2_SECRET_ACCESS_KEY', env.R2_SECRET_ACCESS_KEY)
+    requireEnv('R2_BUCKET', r2Bucket)
+    requireEnv('R2_PUBLIC_BASE_URL', r2PublicBaseUrl)
+  } else if (storageBackend !== 'supabase') {
+    throw new Error(`Unsupported STORAGE_BACKEND: ${storageBackend}`)
+  }
 }
 
 const supabase = dryRun
@@ -34,6 +47,17 @@ const supabase = dryRun
         ? { headers: { 'x-import-token': env.SUPABASE_IMPORT_TOKEN } }
         : undefined,
     })
+
+const r2 = !dryRun && storageBackend === 'r2'
+  ? new S3Client({
+      region: 'auto',
+      endpoint: `https://${env.R2_ACCOUNT_ID}.r2.cloudflarestorage.com`,
+      credentials: {
+        accessKeyId: env.R2_ACCESS_KEY_ID,
+        secretAccessKey: env.R2_SECRET_ACCESS_KEY,
+      },
+    })
+  : null
 
 const stats = {
   albumsSeen: 0,
@@ -243,20 +267,32 @@ async function copyImage(productId, albumId, title, image, position) {
   const fingerprint = createHash('sha1').update(image.url).digest('hex').slice(0, 12)
   const storagePath = `yupoo/${albumId}/${String(position + 1).padStart(2, '0')}-${fingerprint}.${extension}`
 
-  const { error: uploadError } = await supabase.storage.from(bucket).upload(storagePath, bytes, {
-    contentType,
-    cacheControl: '31536000',
-    upsert: false,
-  })
-  if (uploadError && !/duplicate|already exists/i.test(uploadError.message)) throw uploadError
+  let publicUrl
+  if (storageBackend === 'r2') {
+    await r2.send(new PutObjectCommand({
+      Bucket: r2Bucket,
+      Key: storagePath,
+      Body: bytes,
+      ContentType: contentType,
+      CacheControl: 'public, max-age=31536000, immutable',
+    }))
+    publicUrl = `${r2PublicBaseUrl}/${storagePath.split('/').map(encodeURIComponent).join('/')}`
+  } else {
+    const { error: uploadError } = await supabase.storage.from(supabaseBucket).upload(storagePath, bytes, {
+      contentType,
+      cacheControl: '31536000',
+      upsert: false,
+    })
+    if (uploadError && !/duplicate|already exists/i.test(uploadError.message)) throw uploadError
+    publicUrl = supabase.storage.from(supabaseBucket).getPublicUrl(storagePath).data.publicUrl
+  }
 
-  const { data: publicData } = supabase.storage.from(bucket).getPublicUrl(storagePath)
   const { error: imageError } = await supabase.from('product_images').upsert(
     {
       product_id: productId,
       position,
       storage_path: storagePath,
-      public_url: publicData.publicUrl,
+      public_url: publicUrl,
       original_url: image.url,
       alt_text: `${title} - view ${position + 1}`,
       original_filename: image.filename,
