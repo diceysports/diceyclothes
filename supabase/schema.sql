@@ -74,9 +74,18 @@ alter table public.catalog_products enable row level security;
 alter table public.product_images enable row level security;
 alter table public.catalog_import_runs enable row level security;
 
+revoke all on public.catalog_products from anon, authenticated;
+revoke all on public.product_images from anon, authenticated;
+revoke all on public.catalog_import_runs from anon, authenticated;
+
 grant select on public.catalog_products to anon, authenticated;
 grant select on public.product_images to anon, authenticated;
-revoke all on public.catalog_import_runs from anon, authenticated;
+
+grant all on public.catalog_products to service_role;
+grant all on public.product_images to service_role;
+grant all on public.catalog_import_runs to service_role;
+grant usage, select on sequence public.catalog_products_id_seq to service_role;
+grant usage, select on sequence public.product_images_id_seq to service_role;
 
 drop policy if exists "Public can view active catalog products" on public.catalog_products;
 create policy "Public can view active catalog products"
@@ -106,4 +115,3 @@ create policy "Public can read DiceyClothes product images"
   on storage.objects for select
   to anon, authenticated
   using (bucket_id = 'product-images');
-
