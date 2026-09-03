@@ -1,0 +1,72 @@
+name: Import Yupoo catalog to R2
+
+on:
+  workflow_dispatch:
+    inputs:
+      start_page:
+        description: First Yupoo gallery page
+        required: true
+        default: 1
+        type: number
+      end_page:
+        description: Last Yupoo gallery page
+        required: true
+        default: 40
+        type: number
+
+permissions:
+  contents: read
+
+concurrency:
+  group: diceyclothes-yupoo-import
+  cancel-in-progress: false
+
+jobs:
+  import-page:
+    if: ${{ matrix.page >= inputs.start_page && matrix.page <= inputs.end_page }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 360
+    strategy:
+      fail-fast: false
+      max-parallel: 4
+      matrix:
+        page: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40]
+    env:
+      YUPOO_BASE_URL: https://k-kgvcch123.x.yupoo.com
+      YUPOO_PASSWORD: ${{ secrets.YUPOO_PASSWORD }}
+      SUPABASE_URL: https://estdbzdvbmwscjbkvvew.supabase.co
+      SUPABASE_SECRET_KEY: ${{ secrets.SUPABASE_SECRET_KEY }}
+      STORAGE_BACKEND: r2
+      R2_ACCOUNT_ID: ${{ secrets.R2_ACCOUNT_ID }}
+      R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+      R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+      R2_BUCKET: diceyclothes-media
+      R2_PUBLIC_BASE_URL: ${{ secrets.R2_PUBLIC_BASE_URL }}
+      IMPORT_CONCURRENCY: 2
+      UPLOAD_CONCURRENCY: 4
+      DRY_RUN: false
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 24
+          cache: npm
+
+      - name: Check required secrets
+        shell: bash
+        run: |
+          for value in "$YUPOO_PASSWORD" "$SUPABASE_SECRET_KEY" "$R2_ACCOUNT_ID" "$R2_ACCESS_KEY_ID" "$R2_SECRET_ACCESS_KEY" "$R2_PUBLIC_BASE_URL"; do
+            if [ -z "$value" ]; then
+              echo "A required repository secret is missing."
+              exit 1
+            fi
+          done
+
+      - run: npm ci
+
+      - name: Import gallery page ${{ matrix.page }}
+        env:
+          IMPORT_START_PAGE: ${{ matrix.page }}
+          IMPORT_END_PAGE: ${{ matrix.page }}
+        run: npm run import:yupoo
