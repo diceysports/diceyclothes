@@ -23,7 +23,6 @@ concurrency:
 
 jobs:
   import-page:
-    if: ${{ matrix.page >= inputs.start_page && matrix.page <= inputs.end_page }}
     runs-on: ubuntu-latest
     timeout-minutes: 360
     strategy:
@@ -47,13 +46,16 @@ jobs:
       DRY_RUN: false
     steps:
       - uses: actions/checkout@v5
+        if: ${{ matrix.page >= inputs.start_page && matrix.page <= inputs.end_page }}
 
       - uses: actions/setup-node@v5
+        if: ${{ matrix.page >= inputs.start_page && matrix.page <= inputs.end_page }}
         with:
           node-version: 24
           cache: npm
 
       - name: Check required secrets
+        if: ${{ matrix.page >= inputs.start_page && matrix.page <= inputs.end_page }}
         shell: bash
         run: |
           for value in "$YUPOO_PASSWORD" "$SUPABASE_SECRET_KEY" "$R2_ACCOUNT_ID" "$R2_ACCESS_KEY_ID" "$R2_SECRET_ACCESS_KEY" "$R2_PUBLIC_BASE_URL"; do
@@ -64,8 +66,10 @@ jobs:
           done
 
       - run: npm ci
+        if: ${{ matrix.page >= inputs.start_page && matrix.page <= inputs.end_page }}
 
       - name: Import gallery page ${{ matrix.page }}
+        if: ${{ matrix.page >= inputs.start_page && matrix.page <= inputs.end_page }}
         env:
           IMPORT_START_PAGE: ${{ matrix.page }}
           IMPORT_END_PAGE: ${{ matrix.page }}
